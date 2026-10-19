@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "../context/ThemeContext";
@@ -10,29 +10,55 @@ import Screen from "../components/Screen";
 import Header from "../components/Header";
 import Segmented from "../components/Segmented";
 import Metric from "../components/Metric";
-import InsightCard from "../components/InsightCard";
 import { CardHead, Legend, WeekBars } from "../components/Charts";
+import { useQuery } from "../hooks/useQuery";
+import { Workout, dayRange, daysBack, listWorkouts, workoutVolume } from "../lib/db";
 
-const RANGES = ["Day", "Week", "Month", "Year"] as const;
-
-const VOLUME = [62, 48, 75, 0, 83, 54, 36];
-const DAYS = ["S", "M", "T", "W", "T", "F", "S"];
-
-const EXERCISES = [
-  { name: "Barbell Bench Press", sets: "4 × 8", load: "70 kg", done: true },
-  { name: "Incline Dumbbell Press", sets: "3 × 10", load: "24 kg", done: true },
-  { name: "Cable Fly", sets: "3 × 12", load: "18 kg", done: true },
-  { name: "Overhead Press", sets: "4 × 8", load: "40 kg", done: false },
-  { name: "Lateral Raise", sets: "3 × 15", load: "10 kg", done: false },
-  { name: "Triceps Rope Pushdown", sets: "3 × 12", load: "27 kg", done: false },
-];
+const RANGES = ["7 days", "14 days", "30 days"] as const;
+const RANGE_DAYS = [7, 14, 30];
+const DOW = ["S", "M", "T", "W", "T", "F", "S"];
 
 export default function WorkoutsScreen() {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const { colors, glass } = theme;
-  const [range, setRange] = useState(1);
-  const done = EXERCISES.filter((e) => e.done).length;
+  const [range, setRange] = useState(0);
+  const nDays = RANGE_DAYS[range];
+
+  const q = useQuery<Workout[]>(() => {
+    const days = daysBack(nDays);
+    const { start } = dayRange(days[0]);
+    const { end } = dayRange(days[days.length - 1]);
+    return listWorkouts(start, end);
+  }, [nDays]);
+
+  const workouts = q.data ?? [];
+  const days = daysBack(nDays);
+
+  const perDay = days.map((date) => {
+    const { start, end } = dayRange(date);
+    const inDay = workouts.filter((w) => {
+      const at = new Date(w.started_at).getTime();
+      return at >= start.getTime() && at < end.getTime();
+    });
+    return inDay.reduce((sum, w) => sum + workoutVolume(w), 0);
+  });
+
+  const totalVolume = perDay.reduce((a, b) => a + b, 0);
+  const sessions = workouts.length;
+  const minutes = workouts.reduce((a, w) => a + (w.duration_min ?? 0), 0);
+
+  const labels = days.map((d, i) =>
+    nDays <= 7 ? DOW[d.getDay()] : i % Math.ceil(nDays / 7) === 0 ? String(d.getDate()) : ""
+  );
+
+  const loading = q.loading && !q.data;
+  const empty = !loading && sessions === 0;
+
+  const volumeLabel =
+    totalVolume >= 1000
+      ? [{ v: (totalVolume / 1000).toFixed(1), u: "t" }]
+      : [{ v: String(Math.round(totalVolume)), u: "kg" }];
 
   return (
     <Screen>
@@ -43,7 +69,7 @@ export default function WorkoutsScreen() {
           paddingBottom: insets.bottom + TAB_BAR_SPACE,
         }}
       >
-        <Header title={"Push\nSession"} subtitle="Chest · Shoulders · Triceps" />
+        <Header title={"Your\nTraining"} subtitle={`Last ${nDays} days`} />
 
         <View style={{ height: 18 }} />
         <Segmented items={RANGES} value={range} onChange={setRange} />
@@ -52,13 +78,26 @@ export default function WorkoutsScreen() {
         <GlassCard strong style={[styles.hero, cardShadow(theme)]}>
           <CardHead title="Total volume" />
           <View style={styles.metricWrap}>
-            <Metric parts={[{ v: "12.4", u: "k" }, { v: "kg", u: "" }]} />
+            {loading ? (
+              <ActivityIndicator color={colors.text} />
+            ) : (
+              <Metric
+                parts={volumeLabel}
+                caption={sessions ? `across ${sessions} sessions` : "nothing logged yet"}
+                align="flex-start"
+              />
+            )}
           </View>
-          <WeekBars values={VOLUME} labels={DAYS} activeIndex={4} />
+          <WeekBars
+            values={perDay}
+            labels={labels}
+            activeIndex={perDay.length - 1}
+            height={128}
+          />
           <Legend
             items={[
-              { label: "Completed", color: colors.accent },
-              { label: "Rest", color: glass.track },
+              { label: "Today", color: colors.accent },
+              { label: "Earlier", color: glass.track },
             ]}
           />
         </GlassCard>
@@ -66,9 +105,12 @@ export default function WorkoutsScreen() {
         <View style={{ height: space.gap }} />
         <View style={styles.statRow}>
           {[
-            { k: "Exercises", v: `${done}/${EXERCISES.length}` },
-            { k: "Minutes", v: "58" },
-            { k: "Calories", v: "482" },
+            { k: "Sessions", v: String(sessions) },
+            { k: "Minutes", v: String(minutes) },
+            {
+              k: "Avg / day",
+              v: String(Math.round(totalVolume / Math.max(nDays, 1))),
+            },
           ].map((s) => (
             <GlassCard key={s.k} style={styles.stat}>
               <View style={styles.statInner}>
@@ -79,43 +121,52 @@ export default function WorkoutsScreen() {
           ))}
         </View>
 
-        <View style={{ height: space.gap }} />
-        <InsightCard
-          title="Bench volume up 12% this week"
-          body="Your pressing strength is trending up. Keep the overhead press at 40 kg before adding load."
-        />
-
         <View style={{ height: space.section }} />
         <Text style={[t.cardTitle, { color: colors.text, marginBottom: 12 }]}>
-          Today's exercises
+          Sessions
         </Text>
 
-        {EXERCISES.map((ex) => (
-          <GlassCard key={ex.name} style={styles.row}>
-            <View style={styles.rowInner}>
-              <View
-                style={[
-                  styles.check,
-                  {
-                    backgroundColor: ex.done ? colors.accent : "transparent",
-                    borderColor: ex.done ? colors.accent : glass.borderStrong,
-                  },
-                ]}
-              >
-                {ex.done ? (
-                  <Ionicons name="checkmark" size={14} color={colors.onAccent} />
-                ) : null}
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[t.cardTitle, { color: colors.text }]}>{ex.name}</Text>
-                <Text style={[t.label, { color: colors.textDim, marginTop: 3 }]}>
-                  {ex.sets} · {ex.load}
+        {loading ? (
+          <GlassCard style={styles.empty}>
+            <ActivityIndicator color={colors.textDim} />
+          </GlassCard>
+        ) : empty ? (
+          <GlassCard style={styles.empty}>
+            <Ionicons name="barbell-outline" size={26} color={colors.textFaint} />
+            <Text style={[t.cardTitle, { color: colors.text, marginTop: 12 }]}>
+              No sessions yet
+            </Text>
+            <Text
+              style={[
+                t.label,
+                { color: colors.textDim, marginTop: 6, textAlign: "center" },
+              ]}
+            >
+              Workout logging arrives with the chat coach — describe a session and
+              it'll land here.
+            </Text>
+          </GlassCard>
+        ) : (
+          workouts.map((w) => (
+            <GlassCard key={w.id} style={styles.row}>
+              <View style={styles.rowInner}>
+                <View style={[styles.icon, { backgroundColor: glass.track }]}>
+                  <Ionicons name="barbell-outline" size={16} color={colors.text} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[t.cardTitle, { color: colors.text }]}>{w.name}</Text>
+                  <Text style={[t.label, { color: colors.textDim, marginTop: 3 }]}>
+                    {(w.exercise_sets ?? []).length} sets
+                    {w.duration_min ? ` · ${w.duration_min} min` : ""}
+                  </Text>
+                </View>
+                <Text style={[t.cardTitle, { color: colors.text }]}>
+                  {Math.round(workoutVolume(w))} kg
                 </Text>
               </View>
-              <Ionicons name="chevron-forward" size={17} color={colors.textFaint} />
-            </View>
-          </GlassCard>
-        ))}
+            </GlassCard>
+          ))
+        )}
       </GlassScroll>
     </Screen>
   );
@@ -124,18 +175,18 @@ export default function WorkoutsScreen() {
 const styles = StyleSheet.create({
   scroll: { flex: 1, paddingHorizontal: space.gutter },
   hero: { padding: 18 },
-  metricWrap: { marginTop: 16, marginBottom: 20, alignItems: "flex-start" },
+  metricWrap: { marginTop: 16, marginBottom: 20, minHeight: 62, justifyContent: "center" },
   statRow: { flexDirection: "row", gap: 10 },
   stat: { flex: 1 },
   statInner: { padding: 14 },
   row: { marginBottom: 10 },
   rowInner: { flexDirection: "row", alignItems: "center", gap: 13, padding: 15 },
-  check: {
-    width: 26,
-    height: 26,
-    borderRadius: radius.pill,
-    borderWidth: 1.5,
+  icon: {
+    width: 38,
+    height: 38,
+    borderRadius: radius.sm,
     alignItems: "center",
     justifyContent: "center",
   },
+  empty: { alignItems: "center", justifyContent: "center", paddingVertical: 34, paddingHorizontal: 24 },
 });

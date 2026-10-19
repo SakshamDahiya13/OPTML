@@ -2,5 +2,12 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true
-  }
+  },
+  "exclude": [
+    "node_modules",
+    // Edge functions run on Deno, not React Native: different globals, URL
+    // imports, no DOM. They are deployed to Supabase, never bundled into the
+    // app, so typechecking them with the app's config only produces noise.
+    "supabase/functions"
+  ]
 }

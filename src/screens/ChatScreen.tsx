@@ -1,5 +1,6 @@
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -17,46 +18,77 @@ import GlassCard from "../components/GlassCard";
 import GlassScroll from "../components/GlassScroll";
 import Screen from "../components/Screen";
 import Header from "../components/Header";
+import ConfirmMealCard from "../components/ConfirmMealCard";
+import { parseMeal } from "../lib/parse";
+import type { ParseResult } from "../lib/db";
 
-type Message = { id: string; from: "ai" | "me"; text: string };
+type Message =
+  | { id: string; kind: "text"; from: "ai" | "me"; text: string }
+  | { id: string; kind: "error"; from: "ai"; text: string }
+  | { id: string; kind: "confirm"; from: "ai"; result: ParseResult };
 
-const INITIAL: Message[] = [
+const INTRO: Message[] = [
   {
-    id: "1",
+    id: "intro",
+    kind: "text",
     from: "ai",
-    text: "Morning. Log anything you eat in plain language and I'll work out the macros — no weighing required.",
-  },
-  { id: "2", from: "me", text: "2 eggs, a slice of toast and a black coffee" },
-  {
-    id: "3",
-    from: "ai",
-    text: "Logged — about 380 kcal, 22 g protein. That's a solid start. You've got 2,020 kcal left today.",
+    text: "Tell me what you ate in plain words — \"2 eggs and toast\", \"bowl of dal and rice\". I'll work out the macros and show you exactly what I assumed before anything gets saved.",
   },
 ];
 
-const QUICK = ["Log a meal", "What should I eat?", "How am I doing?"];
+const QUICK = ["2 eggs and toast", "chicken salad", "bowl of oats with milk"];
 
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const theme = useTheme();
   const { colors, glass } = theme;
-  const [messages, setMessages] = useState<Message[]>(INITIAL);
+
+  const [messages, setMessages] = useState<Message[]>(INTRO);
   const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
   const scrollRef = useRef<ScrollView | null>(null);
 
-  function send(text?: string) {
-    const body = (text ?? input).trim();
-    if (!body) return;
-    setMessages((prev) => [
-      ...prev,
-      { id: String(Date.now()), from: "me", text: body },
-      {
-        id: String(Date.now() + 1),
-        from: "ai",
-        text: "Got it — I've added that to today's log and updated your macros.",
-      },
-    ]);
-    setInput("");
+  const push = useCallback((m: Message) => {
+    setMessages((prev) => [...prev, m]);
+  }, []);
+
+  const send = useCallback(
+    async (text?: string) => {
+      const body = (text ?? input).trim();
+      if (!body || busy) return;
+
+      setInput("");
+      push({ id: `u${Date.now()}`, kind: "text", from: "me", text: body });
+      setBusy(true);
+
+      try {
+        const result = await parseMeal(body);
+        if (result.items.length === 0) {
+          push({
+            id: `a${Date.now()}`,
+            kind: "text",
+            from: "ai",
+            text: "I couldn't find any food in that. Try naming what you ate and roughly how much.",
+          });
+        } else {
+          push({ id: `c${Date.now()}`, kind: "confirm", from: "ai", result });
+        }
+      } catch (e) {
+        push({
+          id: `e${Date.now()}`,
+          kind: "error",
+          from: "ai",
+          text: e instanceof Error ? e.message : String(e),
+        });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [input, busy, push]
+  );
+
+  function dismiss(id: string) {
+    setMessages((prev) => prev.filter((m) => m.id !== id));
   }
 
   return (
@@ -75,45 +107,82 @@ export default function ChatScreen() {
             paddingBottom: insets.bottom + TAB_BAR_SPACE + 64,
           }}
         >
-          <Header title="Coach" subtitle="Your nutrition AI" />
+          <Header title="Coach" subtitle="Log a meal by describing it" />
           <View style={{ height: 20 }} />
 
-          {messages.map((m) => (
-            <View
-              key={m.id}
-              style={[styles.bubbleRow, m.from === "me" && styles.bubbleRowMe]}
-            >
-              {m.from === "ai" ? (
-                <View style={[styles.aiBadge, { backgroundColor: glass.track }]}>
-                  <Ionicons name="sparkles" size={12} color={colors.text} />
+          {messages.map((m) => {
+            if (m.kind === "confirm") {
+              return (
+                <View key={m.id} style={styles.cardRow}>
+                  <ConfirmMealCard
+                    result={m.result}
+                    onSaved={() => {}}
+                    onDiscard={() => dismiss(m.id)}
+                  />
                 </View>
-              ) : null}
-              <GlassCard
-                strong={m.from === "me"}
-                radius={radius.lg}
-                style={styles.bubble}
+              );
+            }
+
+            const mine = m.from === "me";
+            return (
+              <View
+                key={m.id}
+                style={[styles.bubbleRow, mine && styles.bubbleRowMe]}
               >
-                <Text style={[styles.bubbleText, { color: colors.text }]}>{m.text}</Text>
+                {!mine ? (
+                  <View style={[styles.badge, { backgroundColor: glass.track }]}>
+                    <Ionicons
+                      name={m.kind === "error" ? "alert-circle" : "sparkles"}
+                      size={12}
+                      color={m.kind === "error" ? colors.danger : colors.text}
+                    />
+                  </View>
+                ) : null}
+                <GlassCard strong={mine} radius={radius.lg} style={styles.bubble}>
+                  <Text
+                    style={[
+                      styles.bubbleText,
+                      { color: m.kind === "error" ? colors.danger : colors.text },
+                    ]}
+                  >
+                    {m.text}
+                  </Text>
+                </GlassCard>
+              </View>
+            );
+          })}
+
+          {busy ? (
+            <View style={styles.bubbleRow}>
+              <View style={[styles.badge, { backgroundColor: glass.track }]}>
+                <Ionicons name="sparkles" size={12} color={colors.text} />
+              </View>
+              <GlassCard radius={radius.lg} style={styles.bubble}>
+                <View style={styles.thinking}>
+                  <ActivityIndicator size="small" color={colors.textDim} />
+                  <Text style={[t.label, { color: colors.textDim }]}>
+                    Working it out…
+                  </Text>
+                </View>
               </GlassCard>
             </View>
-          ))}
+          ) : null}
 
-          <View style={styles.quickRow}>
-            {QUICK.map((q) => (
-              <Pressable key={q} onPress={() => send(q)}>
-                <GlassCard radius={radius.pill} style={styles.quick}>
-                  <Text style={[t.label, { color: colors.textDim }]}>{q}</Text>
-                </GlassCard>
-              </Pressable>
-            ))}
-          </View>
+          {messages.length <= 1 && !busy ? (
+            <View style={styles.quickRow}>
+              {QUICK.map((q) => (
+                <Pressable key={q} onPress={() => send(q)}>
+                  <GlassCard radius={radius.pill} style={styles.quick}>
+                    <Text style={[t.label, { color: colors.textDim }]}>{q}</Text>
+                  </GlassCard>
+                </Pressable>
+              ))}
+            </View>
+          ) : null}
         </GlassScroll>
 
         <View
-          style={[
-            styles.composerWrap,
-            { bottom: insets.bottom + TAB_BAR_SPACE - 10 },
-          ]}
+          style={[styles.composerWrap, { bottom: insets.bottom + TAB_BAR_SPACE - 10 }]}
           pointerEvents="box-none"
         >
           <GlassCard
@@ -126,15 +195,25 @@ export default function ChatScreen() {
               <TextInput
                 value={input}
                 onChangeText={setInput}
-                placeholder="Tell me what you ate…"
+                placeholder="What did you eat?"
                 placeholderTextColor={colors.textFaint}
                 style={[styles.input, { color: colors.text }]}
                 onSubmitEditing={() => send()}
                 returnKeyType="send"
+                editable={!busy}
               />
-              <Pressable onPress={() => send()} style={styles.sendWrap}>
-                <View style={[styles.send, { backgroundColor: colors.accent }]}>
-                  <Ionicons name="arrow-up" size={17} color={colors.onAccent} />
+              <Pressable onPress={() => send()} disabled={busy}>
+                <View
+                  style={[
+                    styles.sendBtn,
+                    { backgroundColor: busy ? glass.track : colors.accent },
+                  ]}
+                >
+                  <Ionicons
+                    name="arrow-up"
+                    size={17}
+                    color={busy ? colors.textFaint : colors.onAccent}
+                  />
                 </View>
               </Pressable>
             </View>
@@ -150,7 +229,7 @@ const styles = StyleSheet.create({
   scroll: { flex: 1, paddingHorizontal: space.gutter },
   bubbleRow: { flexDirection: "row", alignItems: "flex-end", gap: 9, marginBottom: 12 },
   bubbleRowMe: { justifyContent: "flex-end", paddingLeft: 48 },
-  aiBadge: {
+  badge: {
     width: 26,
     height: 26,
     borderRadius: radius.pill,
@@ -160,7 +239,9 @@ const styles = StyleSheet.create({
   },
   bubble: { flexShrink: 1 },
   bubbleText: { fontSize: 14, lineHeight: 20, padding: 14 },
-  quickRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
+  thinking: { flexDirection: "row", alignItems: "center", gap: 9, padding: 14 },
+  cardRow: { marginBottom: 12 },
+  quickRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 4 },
   quick: { paddingHorizontal: 14, paddingVertical: 9 },
   composerWrap: { position: "absolute", left: space.gutter, right: space.gutter },
   composer: { height: 54 },
@@ -173,6 +254,11 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   input: { flex: 1, fontSize: 14 },
-  sendWrap: { padding: 1 },
-  send: { width: 42, height: 42, borderRadius: radius.pill, alignItems: "center", justifyContent: "center" },
+  sendBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: radius.pill,
+    alignItems: "center",
+    justifyContent: "center",
+  },
 });

@@ -1,4 +1,14 @@
-import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { useEffect, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "../context/ThemeContext";
@@ -7,19 +17,68 @@ import GlassCard from "../components/GlassCard";
 import GlassScroll from "../components/GlassScroll";
 import Screen from "../components/Screen";
 import Header from "../components/Header";
+import { useQuery } from "../hooks/useQuery";
+import { Profile, getProfile, updateProfile } from "../lib/db";
 import { supabase } from "../lib/supabase";
 
-const MENU: { icon: keyof typeof Ionicons.glyphMap; label: string; sub?: string }[] = [
-  { icon: "person-outline", label: "Profile" },
-  { icon: "flag-outline", label: "Nutrition goals" },
-  { icon: "barbell-outline", label: "Bodybuilder mode", sub: "Exact tracking instead of AI estimates" },
-  { icon: "card-outline", label: "Subscription", sub: "Manage your plan" },
-  { icon: "notifications-outline", label: "Notifications" },
+const GOALS: [keyof Profile, string, string][] = [
+  ["goal_calories", "Calories", "kcal"],
+  ["goal_protein_g", "Protein", "g"],
+  ["goal_carbs_g", "Carbs", "g"],
+  ["goal_fat_g", "Fat", "g"],
 ];
 
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const { colors, glass, mode, setMode } = useTheme();
+
+  const q = useQuery<Profile | null>(() => getProfile(), []);
+  const profile = q.data;
+
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  // Seed the inputs once the profile arrives, but never clobber something the
+  // user is part-way through typing.
+  useEffect(() => {
+    if (!profile || dirty) return;
+    setDraft({
+      goal_calories: String(profile.goal_calories),
+      goal_protein_g: String(profile.goal_protein_g),
+      goal_carbs_g: String(profile.goal_carbs_g),
+      goal_fat_g: String(profile.goal_fat_g),
+    });
+  }, [profile, dirty]);
+
+  async function saveGoals() {
+    setSaving(true);
+    try {
+      const patch: Partial<Profile> = {};
+      for (const [key] of GOALS) {
+        const n = parseInt(draft[key as string] ?? "", 10);
+        if (Number.isFinite(n) && n >= 0) {
+          (patch as Record<string, number>)[key as string] = n;
+        }
+      }
+      await updateProfile(patch);
+      setDirty(false);
+      q.refetch();
+    } catch (e) {
+      Alert.alert("Couldn't save", e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function toggleBodybuilder(on: boolean) {
+    try {
+      await updateProfile({ bodybuilder_mode: on });
+      q.refetch();
+    } catch (e) {
+      Alert.alert("Couldn't save", e instanceof Error ? e.message : String(e));
+    }
+  }
 
   function handleLogOut() {
     Alert.alert("Log out?", "You'll need to log back in to keep logging.", [
@@ -37,7 +96,7 @@ export default function SettingsScreen() {
           paddingBottom: insets.bottom + TAB_BAR_SPACE,
         }}
       >
-        <Header title="Settings" subtitle="Profile, goals and preferences" />
+        <Header title="Settings" subtitle="Goals, tracking and preferences" />
 
         <View style={{ height: 24 }} />
         <Text style={[t.tiny, { color: colors.textDim, marginBottom: 10 }]}>
@@ -50,10 +109,7 @@ export default function SettingsScreen() {
               return (
                 <Pressable key={m} style={styles.themeOption} onPress={() => setMode(m)}>
                   <View
-                    style={[
-                      styles.themePill,
-                      active && { backgroundColor: colors.accent },
-                    ]}
+                    style={[styles.themePill, active && { backgroundColor: colors.accent }]}
                   >
                     <Ionicons
                       name={m === "light" ? "sunny-outline" : "moon-outline"}
@@ -79,40 +135,91 @@ export default function SettingsScreen() {
         </GlassCard>
 
         <View style={{ height: space.section }} />
-        <Text style={[t.tiny, { color: colors.textDim, marginBottom: 10 }]}>ACCOUNT</Text>
-        <GlassCard>
-          <View>
-            {MENU.map((item, i) => (
-              <View
-                key={item.label}
-                style={[
-                  styles.row,
-                  i !== MENU.length - 1 && {
-                    borderBottomWidth: StyleSheet.hairlineWidth,
-                    borderBottomColor: glass.border,
-                  },
-                ]}
-              >
-                <View style={[styles.rowIcon, { backgroundColor: glass.track }]}>
-                  <Ionicons name={item.icon} size={17} color={colors.text} />
+        <Text style={[t.tiny, { color: colors.textDim, marginBottom: 10 }]}>
+          DAILY GOALS
+        </Text>
+        <GlassCard style={styles.pad}>
+          {q.loading && !profile ? (
+            <ActivityIndicator color={colors.textDim} />
+          ) : (
+            <>
+              {GOALS.map(([key, label, unit], i) => (
+                <View
+                  key={key as string}
+                  style={[
+                    styles.goalRow,
+                    i !== GOALS.length - 1 && {
+                      borderBottomWidth: StyleSheet.hairlineWidth,
+                      borderBottomColor: glass.border,
+                    },
+                  ]}
+                >
+                  <Text style={[t.cardTitle, { color: colors.text, flex: 1 }]}>
+                    {label}
+                  </Text>
+                  <TextInput
+                    value={draft[key as string] ?? ""}
+                    onChangeText={(v) => {
+                      setDirty(true);
+                      setDraft((d) => ({ ...d, [key as string]: v }));
+                    }}
+                    keyboardType="number-pad"
+                    style={[
+                      styles.goalInput,
+                      { color: colors.text, backgroundColor: glass.track },
+                    ]}
+                  />
+                  <Text style={[t.label, { color: colors.textFaint, width: 30 }]}>
+                    {unit}
+                  </Text>
                 </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[t.cardTitle, { color: colors.text }]}>{item.label}</Text>
-                  {item.sub ? (
-                    <Text style={[t.label, { color: colors.textDim, marginTop: 3 }]}>
-                      {item.sub}
-                    </Text>
-                  ) : null}
-                </View>
-                <Ionicons name="chevron-forward" size={17} color={colors.textFaint} />
-              </View>
-            ))}
+              ))}
+
+              {dirty ? (
+                <Pressable onPress={saveGoals} disabled={saving} style={{ marginTop: 14 }}>
+                  <View style={[styles.save, { backgroundColor: colors.accent }]}>
+                    {saving ? (
+                      <ActivityIndicator color={colors.onAccent} />
+                    ) : (
+                      <Text style={[t.label, { color: colors.onAccent, fontWeight: "700" }]}>
+                        Save goals
+                      </Text>
+                    )}
+                  </View>
+                </Pressable>
+              ) : null}
+            </>
+          )}
+        </GlassCard>
+
+        <View style={{ height: space.section }} />
+        <Text style={[t.tiny, { color: colors.textDim, marginBottom: 10 }]}>
+          TRACKING
+        </Text>
+        <GlassCard style={styles.pad}>
+          <View style={styles.switchRow}>
+            <View style={{ flex: 1, paddingRight: 14 }}>
+              <Text style={[t.cardTitle, { color: colors.text }]}>
+                Bodybuilder mode
+              </Text>
+              <Text style={[t.label, { color: colors.textDim, marginTop: 4 }]}>
+                Match foods against a nutrition database for exact numbers and
+                micronutrients, instead of AI estimates.
+              </Text>
+            </View>
+            <Switch
+              value={profile?.bodybuilder_mode ?? false}
+              onValueChange={toggleBodybuilder}
+              disabled={!profile}
+              trackColor={{ false: glass.track, true: colors.accent }}
+              thumbColor={colors.onAccent}
+            />
           </View>
         </GlassCard>
 
         <View style={{ height: space.gap }} />
         <Pressable onPress={handleLogOut}>
-          <GlassCard style={styles.logout}>
+          <GlassCard>
             <View style={styles.logoutInner}>
               <Ionicons name="log-out-outline" size={17} color={colors.danger} />
               <Text style={[t.cardTitle, { color: colors.danger }]}>Log out</Text>
@@ -126,6 +233,7 @@ export default function SettingsScreen() {
 
 const styles = StyleSheet.create({
   scroll: { flex: 1, paddingHorizontal: space.gutter },
+  pad: { padding: 16 },
   themeCard: { padding: 5 },
   themeRow: { flexDirection: "row", gap: 5 },
   themeOption: { flex: 1 },
@@ -137,15 +245,23 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: radius.pill,
   },
-  row: { flexDirection: "row", alignItems: "center", padding: 15, gap: 13 },
-  rowIcon: {
-    width: 36,
-    height: 36,
+  goalRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 11 },
+  goalInput: {
+    width: 86,
+    textAlign: "right",
     borderRadius: radius.sm,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  save: {
+    height: 46,
+    borderRadius: radius.pill,
     alignItems: "center",
     justifyContent: "center",
   },
-  logout: {},
+  switchRow: { flexDirection: "row", alignItems: "center" },
   logoutInner: {
     flexDirection: "row",
     alignItems: "center",
