@@ -8,6 +8,7 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useNavigation } from "@react-navigation/native";
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "../context/ThemeContext";
 import { TAB_BAR_SPACE, cardShadow, radius, space, type as t } from "../theme";
@@ -20,6 +21,7 @@ import Metric from "../components/Metric";
 import InsightCard from "../components/InsightCard";
 import ProgressRing from "../components/ProgressRing";
 import AddMealSheet from "../components/AddMealSheet";
+import ScanSheet from "../components/ScanSheet";
 import { CardHead, TrackBar } from "../components/Charts";
 import { useQuery } from "../hooks/useQuery";
 import {
@@ -53,8 +55,10 @@ export default function FoodLogScreen() {
   const theme = useTheme();
   const { colors, glass } = theme;
 
+  const navigation = useNavigation<{ navigate: (screen: string) => void }>();
   const [dayIndex, setDayIndex] = useState(new Date().getDay());
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
 
   const profileQ = useQuery<Profile | null>(() => getProfile(), []);
   const mealsQ = useQuery<Meal[]>(() => {
@@ -209,16 +213,25 @@ export default function FoodLogScreen() {
           <Text style={[t.cardTitle, { color: colors.text }]}>
             {dayIndex === new Date().getDay() ? "Today's meals" : "Meals"}
           </Text>
-          <Pressable onPress={() => setSheetOpen(true)}>
-            <GlassCard strong radius={radius.pill} style={styles.addBtn}>
-              <View style={styles.addInner}>
-                <Ionicons name="add" size={16} color={colors.text} />
-                <Text style={[t.label, { color: colors.text, fontWeight: "600" }]}>
-                  Add meal
-                </Text>
-              </View>
-            </GlassCard>
-          </Pressable>
+          <View style={styles.sectionBtns}>
+            <Pressable onPress={() => setScanOpen(true)}>
+              <GlassCard strong radius={radius.pill} style={styles.scanBtn}>
+                <View style={styles.scanInner}>
+                  <Ionicons name="barcode-outline" size={17} color={colors.text} />
+                </View>
+              </GlassCard>
+            </Pressable>
+            <Pressable onPress={() => setSheetOpen(true)}>
+              <GlassCard strong radius={radius.pill} style={styles.addBtn}>
+                <View style={styles.addInner}>
+                  <Ionicons name="add" size={16} color={colors.text} />
+                  <Text style={[t.label, { color: colors.text, fontWeight: "600" }]}>
+                    Add meal
+                  </Text>
+                </View>
+              </GlassCard>
+            </Pressable>
+          </View>
         </View>
 
         {loading ? (
@@ -292,6 +305,15 @@ export default function FoodLogScreen() {
         onClose={() => setSheetOpen(false)}
         onSaved={refetch}
       />
+
+      <ScanSheet
+        visible={scanOpen}
+        onClose={() => setScanOpen(false)}
+        onSaved={refetch}
+        // A barcode we don't recognise hands off to the parser rather than
+        // dead-ending the user on "not found".
+        onFallbackToChat={() => navigation.navigate("Chat")}
+      />
     </Screen>
   );
 }
@@ -310,6 +332,9 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginBottom: 12,
   },
+  sectionBtns: { flexDirection: "row", alignItems: "center", gap: 8 },
+  scanBtn: { height: 36, width: 40 },
+  scanInner: { height: 36, width: 40, alignItems: "center", justifyContent: "center" },
   addBtn: { height: 36 },
   addInner: {
     flexDirection: "row",
