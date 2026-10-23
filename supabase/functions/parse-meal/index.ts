@@ -1,8 +1,13 @@
 // OPTML — parse-meal edge function
 //
-// Takes a sentence ("2 eggs and toast") and returns structured food items with
-// honest ranges. It does NOT write to the database: the app shows a confirm
-// card first, and saves only what the user accepts.
+// Takes one sentence typed in chat and classifies it as a meal, a workout, a
+// night of sleep, or none of those — then returns structured data for
+// whichever it is. It does NOT write to the database: the app shows a
+// confirm card first, and saves only what the user accepts.
+//
+// One classifier rather than three separate ones because the alternative is
+// asking the user to pick a category before they've typed anything, which is
+// exactly the friction a chat box exists to remove.
 //
 // Why this runs server-side: the model API key must never reach the device.
 // Anything named EXPO_PUBLIC_* is inlined into the JS bundle and can be read
@@ -48,28 +53,45 @@ type Item = {
   assumptions: { matched?: string; portion?: string; note?: string } | null;
 };
 
-const SYSTEM_PROMPT = `You convert a description of a meal into structured nutrition data.
+const SYSTEM_PROMPT = `You read one message a user typed to log something about their day —
+food, a workout, or sleep — and turn it into structured data.
 
-Return ONLY a JSON object, no prose, in exactly this shape:
+Return ONLY a JSON object, no prose, no markdown fence, in exactly this shape:
 {
+  "kind": "food" | "workout" | "sleep" | "none",
   "label": "Breakfast" | "Lunch" | "Dinner" | "Snack",
-  "items": [
-    {
-      "name": "short food name",
-      "qty": number or null,
-      "unit": "g" | "ml" | "piece" | "slice" | "cup" | "tbsp" | "oz" | null,
-      "calories": number, "calories_min": number, "calories_max": number,
-      "protein_g": number, "protein_min": number, "protein_max": number,
-      "carbs_g": number, "carbs_min": number, "carbs_max": number,
-      "fat_g": number, "fat_min": number, "fat_max": number,
-      "confidence": "high" | "medium" | "low",
-      "assumptions": { "matched": "what food you matched", "portion": "what portion you assumed", "note": "anything you had to guess, or null" }
-    }
-  ]
+  "items": [ ...food items, see below... ],
+  "workout": { "name": string, "exercises": [ { "name": string, "sets": [ { "reps": number|null, "weight_kg": number|null } ] } ] } | null,
+  "sleep": { "hours": number|null, "quality": 1|2|3|4|5|null, "bed_time": "HH:MM"|null, "wake_time": "HH:MM"|null } | null
 }
 
-Rules on the numbers, which matter more than anything else here:
+FIRST decide "kind":
+- "food": the message describes something eaten or drunk.
+- "workout": the message describes exercise — sets, reps, a run, pushups,
+  "leg day", a duration of activity.
+- "sleep": the message states how long or how well they slept, or bed/wake
+  times ("slept 7 hours", "woke up at 7", "bad sleep last night").
+- "none": anything else — a greeting, a question, small talk. Return every
+  other field null/empty when kind is "none".
 
+Fill ONLY the block matching "kind". The other two stay null (or items: []
+for a non-food kind). Never guess content for a block that doesn't match.
+
+--- FOOD (kind: "food") ---
+"items" is an array of:
+  {
+    "name": "short food name",
+    "qty": number or null,
+    "unit": "g" | "ml" | "piece" | "slice" | "cup" | "tbsp" | "oz" | null,
+    "calories": number, "calories_min": number, "calories_max": number,
+    "protein_g": number, "protein_min": number, "protein_max": number,
+    "carbs_g": number, "carbs_min": number, "carbs_max": number,
+    "fat_g": number, "fat_min": number, "fat_max": number,
+    "confidence": "high" | "medium" | "low",
+    "assumptions": { "matched": string, "portion": string, "note": string|null }
+  }
+
+Rules on the numbers, which matter more than anything else here:
 1. The point estimate is your best single guess. The min and max are a genuine
    80% interval: you should expect the true value to fall inside them about
    four times in five.
@@ -88,10 +110,31 @@ Rules on the numbers, which matter more than anything else here:
    "assumed 1 large egg = 50g", "assumed restaurant portion, cooked in oil".
    Put anything you genuinely guessed in "note".
 6. Never invent micronutrients. Only the four macros above.
-7. If the text describes no food at all, return {"label":"Snack","items":[]}.
+7. A single implausible quantity ("1kg bread", "5 litres of milk") is still
+   logged honestly at face value — do not silently cap it. If it looks like a
+   typo for a smaller amount, say so in "note" but still compute the stated
+   quantity, so the confirm screen shows the real number rather than a quietly
+   substituted one.
 
-Honesty about uncertainty is this product's entire purpose. A confidently wrong
-number is far worse than a wide range.`;
+--- WORKOUT (kind: "workout") ---
+"workout.exercises" holds one entry per distinct movement named. "sets" holds
+one entry per set mentioned. If only a rep count is given with no set count
+("40 pushups"), that is one set of that many reps, weight_kg null. If reps
+AND weight are both absent for a cardio-style activity ("ran for 30 minutes"),
+still create one exercise named for the activity with one set, reps null,
+weight_kg null — "workout.name" or the surrounding context can carry the
+duration in words; there is no duration field on a set.
+"workout.name" is a short label for the session, e.g. "Push day", "Run",
+"Pushups" — invent one if the user didn't name it.
+
+--- SLEEP (kind: "sleep") ---
+Fill whichever of hours / quality / bed_time / wake_time the message actually
+states. Leave the rest null — do not compute hours from times or invent a
+quality rating nobody mentioned. "quality" is 1 (awful) to 5 (great), only
+set if the user described how it felt, not just how long.
+
+Honesty about uncertainty is this product's entire purpose. A confidently
+wrong number is far worse than a wide range or a null.`;
 
 function clampNumber(v: unknown, fallback = 0): number {
   const n = typeof v === "number" ? v : parseFloat(String(v));
@@ -132,6 +175,78 @@ function sanitise(raw: Record<string, unknown>): Item {
       raw.assumptions && typeof raw.assumptions === "object"
         ? (raw.assumptions as Item["assumptions"])
         : null,
+  };
+}
+
+type ParsedSet = { reps: number | null; weight_kg: number | null };
+type ParsedExercise = { name: string; sets: ParsedSet[] };
+type ParsedWorkout = { name: string; exercises: ParsedExercise[] };
+
+function sanitiseWorkout(raw: unknown): ParsedWorkout | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const rawExercises = Array.isArray(r.exercises) ? r.exercises : [];
+
+  const exercises: ParsedExercise[] = rawExercises
+    .filter((e): e is Record<string, unknown> => !!e && typeof e === "object")
+    .slice(0, 12)
+    .map((e) => {
+      const rawSets = Array.isArray(e.sets) ? e.sets : [];
+      const sets: ParsedSet[] = rawSets
+        .filter((x): x is Record<string, unknown> => !!x && typeof x === "object")
+        .slice(0, 20)
+        .map((x) => ({
+          reps: x.reps == null ? null : Math.max(0, Math.round(clampNumber(x.reps))),
+          weight_kg: x.weight_kg == null ? null : clampNumber(x.weight_kg),
+        }));
+      return {
+        name: String(e.name ?? "Exercise").slice(0, 80),
+        // An exercise the model named but gave no sets for is a dead end in
+        // the UI — one with reps/weight both null at least shows up logged.
+        sets: sets.length ? sets : [{ reps: null, weight_kg: null }],
+      };
+    })
+    .filter((e) => e.name);
+
+  if (!exercises.length) return null;
+  return { name: String(r.name ?? "Workout").slice(0, 80), exercises };
+}
+
+type ParsedSleep = {
+  hours: number | null;
+  quality: number | null;
+  bed_time: string | null;
+  wake_time: string | null;
+};
+
+function sanitiseSleep(raw: unknown): ParsedSleep | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+
+  const time = (v: unknown): string | null => {
+    const m = typeof v === "string" ? v.match(/^(\d{1,2}):(\d{2})$/) : null;
+    if (!m) return null;
+    const h = +m[1], min = +m[2];
+    return h <= 23 && min <= 59 ? `${String(h).padStart(2, "0")}:${m[2]}` : null;
+  };
+
+  const hours = r.hours == null ? null : clampNumber(r.hours);
+  const quality =
+    typeof r.quality === "number" && r.quality >= 1 && r.quality <= 5
+      ? Math.round(r.quality)
+      : null;
+  const bed_time = time(r.bed_time);
+  const wake_time = time(r.wake_time);
+
+  // Nothing at all to log means the model misclassified "sleep" — don't hand
+  // the app an empty confirm card.
+  if (hours === null && bed_time === null && wake_time === null) return null;
+
+  return {
+    hours: hours !== null && hours > 0 && hours < 24 ? hours : null,
+    quality,
+    bed_time,
+    wake_time,
   };
 }
 
@@ -236,11 +351,17 @@ Deno.serve(async (req: Request) => {
       return json({ error: "The model returned something that wasn't JSON." }, 502);
     }
 
+    const kind = ["food", "workout", "sleep", "none"].includes(String(parsed.kind))
+      ? (parsed.kind as "food" | "workout" | "sleep" | "none")
+      : "none";
+
     const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
-    const items = rawItems
-      .filter((i): i is Record<string, unknown> => !!i && typeof i === "object")
-      .slice(0, 20)
-      .map(sanitise);
+    const items = kind === "food"
+      ? rawItems
+          .filter((i): i is Record<string, unknown> => !!i && typeof i === "object")
+          .slice(0, 20)
+          .map(sanitise)
+      : [];
 
     const label = ["Breakfast", "Lunch", "Dinner", "Snack"].includes(
         String(parsed.label),
@@ -248,9 +369,22 @@ Deno.serve(async (req: Request) => {
       ? String(parsed.label)
       : "Snack";
 
+    // A kind with nothing usable in its own block is really "none" — this
+    // stops an empty workout/sleep confirm card reaching the chat.
+    const workout = kind === "workout" ? sanitiseWorkout(parsed.workout) : null;
+    const sleep = kind === "sleep" ? sanitiseSleep(parsed.sleep) : null;
+    const effectiveKind =
+      kind === "food" && items.length === 0 ? "none"
+      : kind === "workout" && !workout ? "none"
+      : kind === "sleep" && !sleep ? "none"
+      : kind;
+
     return json({
+      kind: effectiveKind,
       label,
       items,
+      workout,
+      sleep,
       raw_text: text,
       // Surfaced in the UI so the user knows their own corrections were used.
       priors_used: priors?.length ?? 0,

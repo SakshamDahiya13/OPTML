@@ -19,24 +19,28 @@ import GlassScroll from "../components/GlassScroll";
 import Screen from "../components/Screen";
 import Header from "../components/Header";
 import ConfirmMealCard from "../components/ConfirmMealCard";
-import { parseMeal } from "../lib/parse";
-import type { ParseResult } from "../lib/db";
+import ConfirmWorkoutCard from "../components/ConfirmWorkoutCard";
+import ConfirmSleepCard from "../components/ConfirmSleepCard";
+import { parseLog } from "../lib/parse";
+import type { ParsedSleep, ParsedWorkout, ParseResult } from "../lib/db";
 
 type Message =
   | { id: string; kind: "text"; from: "ai" | "me"; text: string }
   | { id: string; kind: "error"; from: "ai"; text: string }
-  | { id: string; kind: "confirm"; from: "ai"; result: ParseResult };
+  | { id: string; kind: "confirmFood"; from: "ai"; result: ParseResult }
+  | { id: string; kind: "confirmWorkout"; from: "ai"; workout: ParsedWorkout }
+  | { id: string; kind: "confirmSleep"; from: "ai"; sleep: ParsedSleep };
 
 const INTRO: Message[] = [
   {
     id: "intro",
     kind: "text",
     from: "ai",
-    text: "Tell me what you ate in plain words — \"2 eggs and toast\", \"bowl of dal and rice\". I'll work out the macros and show you exactly what I assumed before anything gets saved.",
+    text: "Tell me what you ate, a workout you did, or how you slept — \"2 eggs and toast\", \"did 3 sets of squats\", \"slept 7 hours\". I'll show you exactly what I understood before anything gets saved.",
   },
 ];
 
-const QUICK = ["2 eggs and toast", "chicken salad", "bowl of oats with milk"];
+const QUICK = ["2 eggs and toast", "40 pushups", "slept 7 hours, felt good"];
 
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
@@ -62,16 +66,20 @@ export default function ChatScreen() {
       setBusy(true);
 
       try {
-        const result = await parseMeal(body);
-        if (result.items.length === 0) {
+        const result = await parseLog(body);
+        if (result.kind === "food") {
+          push({ id: `c${Date.now()}`, kind: "confirmFood", from: "ai", result });
+        } else if (result.kind === "workout" && result.workout) {
+          push({ id: `w${Date.now()}`, kind: "confirmWorkout", from: "ai", workout: result.workout });
+        } else if (result.kind === "sleep" && result.sleep) {
+          push({ id: `s${Date.now()}`, kind: "confirmSleep", from: "ai", sleep: result.sleep });
+        } else {
           push({
             id: `a${Date.now()}`,
             kind: "text",
             from: "ai",
-            text: "I couldn't find any food in that. Try naming what you ate and roughly how much.",
+            text: "I couldn't tell what to log from that. Try describing food, a workout, or how you slept.",
           });
-        } else {
-          push({ id: `c${Date.now()}`, kind: "confirm", from: "ai", result });
         }
       } catch (e) {
         push({
@@ -111,11 +119,33 @@ export default function ChatScreen() {
           <View style={{ height: 20 }} />
 
           {messages.map((m) => {
-            if (m.kind === "confirm") {
+            if (m.kind === "confirmFood") {
               return (
                 <View key={m.id} style={styles.cardRow}>
                   <ConfirmMealCard
                     result={m.result}
+                    onSaved={() => {}}
+                    onDiscard={() => dismiss(m.id)}
+                  />
+                </View>
+              );
+            }
+            if (m.kind === "confirmWorkout") {
+              return (
+                <View key={m.id} style={styles.cardRow}>
+                  <ConfirmWorkoutCard
+                    workout={m.workout}
+                    onSaved={() => {}}
+                    onDiscard={() => dismiss(m.id)}
+                  />
+                </View>
+              );
+            }
+            if (m.kind === "confirmSleep") {
+              return (
+                <View key={m.id} style={styles.cardRow}>
+                  <ConfirmSleepCard
+                    sleep={m.sleep}
                     onSaved={() => {}}
                     onDiscard={() => dismiss(m.id)}
                   />

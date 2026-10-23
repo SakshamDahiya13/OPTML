@@ -1,16 +1,18 @@
 import { FunctionsHttpError } from "@supabase/supabase-js";
 import { supabase } from "./supabase";
-import type { ParseResult } from "./db";
+import type { ParseLogResult } from "./db";
 
 /**
- * Send a sentence to the parse-meal edge function.
+ * Send one chat message to the parse-meal edge function.
  *
- * The function returns useful, specific error messages (a missing API key, a
- * model name the account can't use), but supabase-js hides the response body
- * behind a generic "non-2xx status code" error. Unwrapping it here is the
- * difference between a usable message and a dead end.
+ * Despite the name, the function now classifies the message as food, a
+ * workout, sleep, or neither, and returns whichever block matches — see
+ * ParseLogResult. The function returns useful, specific error messages (a
+ * missing API key, a model name the account can't use), but supabase-js hides
+ * the response body behind a generic "non-2xx status code" error. Unwrapping
+ * it here is the difference between a usable message and a dead end.
  */
-export async function parseMeal(text: string): Promise<ParseResult> {
+export async function parseLog(text: string): Promise<ParseLogResult> {
   const { data, error } = await supabase.functions.invoke("parse-meal", {
     body: { text },
   });
@@ -24,9 +26,9 @@ export async function parseMeal(text: string): Promise<ParseResult> {
     throw new Error(message);
   }
 
-  if (!data || !Array.isArray(data.items)) {
+  if (!data || typeof data.kind !== "string") {
     throw new Error("The parser returned an unexpected response.");
   }
 
-  return data as ParseResult;
+  return data as ParseLogResult;
 }

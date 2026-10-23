@@ -17,13 +17,18 @@ import {
   Macros,
   Meal,
   Profile,
+  SleepLog,
+  Workout,
   ZERO,
   dayRange,
   daysBack,
   getProfile,
   listMeals,
+  listSleep,
+  listWorkouts,
   sumMacros,
 } from "../lib/db";
+import { buildRecommendations } from "../lib/recommend";
 
 const RANGES = ["7 days", "14 days", "30 days"] as const;
 const RANGE_DAYS = [7, 14, 30];
@@ -57,6 +62,16 @@ export default function AnalyticsScreen() {
     const { end } = dayRange(days[days.length - 1]);
     return listMeals(start, end);
   }, [nDays]);
+  const workoutsQ = useQuery<Workout[]>(() => {
+    const days = daysBack(nDays);
+    const { start } = dayRange(days[0]);
+    const { end } = dayRange(days[days.length - 1]);
+    return listWorkouts(start, end);
+  }, [nDays]);
+  const sleepQ = useQuery<SleepLog[]>(() => {
+    const days = daysBack(nDays);
+    return listSleep(days[0], days[days.length - 1]);
+  }, [nDays]);
 
   const days = daysBack(nDays);
   const totals = bucket(mealsQ.data ?? [], days);
@@ -87,6 +102,17 @@ export default function AnalyticsScreen() {
   const onTarget = logged.filter(
     (d) => Math.abs(d.macros.calories - goals.calories) <= goals.calories * 0.1
   ).length;
+
+  const recommendations = buildRecommendations({
+    loggedDays: logged.length,
+    nDays,
+    avgProtein: avg.protein_g,
+    goalProtein: goals.protein_g,
+    avgCalories: avg.calories,
+    goalCalories: goals.calories,
+    workouts: workoutsQ.data ?? [],
+    sleep: sleepQ.data ?? [],
+  });
 
   const loading = mealsQ.loading && !mealsQ.data;
   const empty = !loading && logged.length === 0;
@@ -204,6 +230,22 @@ export default function AnalyticsScreen() {
           </>
         )}
 
+        {recommendations.length ? (
+          <>
+            <View style={{ height: space.gap }} />
+            <GlassCard style={styles.card}>
+              <CardHead title="Your trends" right={false} />
+              <View style={{ height: 4 }} />
+              {recommendations.map((r, i) => (
+                <View key={i} style={styles.recRow}>
+                  <Ionicons name={r.icon as never} size={16} color={colors.textDim} style={{ marginTop: 1 }} />
+                  <Text style={[t.label, { color: colors.textDim, flex: 1 }]}>{r.text}</Text>
+                </View>
+              ))}
+            </GlassCard>
+          </>
+        ) : null}
+
         <View style={{ height: space.gap }} />
         <GlassCard style={styles.card}>
           <CardHead title="Micronutrients" right={false} />
@@ -229,4 +271,5 @@ const styles = StyleSheet.create({
   rowTop: { flexDirection: "row", justifyContent: "space-between", marginBottom: 8 },
   empty: { alignItems: "center", justifyContent: "center", paddingVertical: 34, paddingHorizontal: 24 },
   lockedRow: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 14 },
+  recRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, marginTop: 14 },
 });

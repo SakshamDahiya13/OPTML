@@ -271,6 +271,34 @@ export type ParseResult = {
   priors_used: number;
 };
 
+/** What the parse-meal function returns for a workout-shaped message. */
+export type ParsedWorkout = {
+  name: string;
+  exercises: { name: string; sets: { reps: number | null; weight_kg: number | null }[] }[];
+};
+
+/** What it returns for a sleep-shaped message. Any field may be null. */
+export type ParsedSleep = {
+  hours: number | null;
+  quality: number | null;
+  bed_time: string | null;
+  wake_time: string | null;
+};
+
+/**
+ * The full shape of a parse-meal response. "kind" says which of items /
+ * workout / sleep actually holds data — the other two are empty/null.
+ */
+export type ParseLogResult = {
+  kind: "food" | "workout" | "sleep" | "none";
+  label: string;
+  items: ParsedItem[];
+  workout: ParsedWorkout | null;
+  sleep: ParsedSleep | null;
+  raw_text: string;
+  priors_used: number;
+};
+
 const RANGE_FIELDS = [
   ["calories", "calories_min", "calories_max"],
   ["protein_g", "protein_min", "protein_max"],
