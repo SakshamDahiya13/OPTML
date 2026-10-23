@@ -58,6 +58,7 @@ export default function FoodLogScreen() {
   const navigation = useNavigation<{ navigate: (screen: string) => void }>();
   const [dayIndex, setDayIndex] = useState(new Date().getDay());
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [editingMeal, setEditingMeal] = useState<Meal | null>(null);
   const [scanOpen, setScanOpen] = useState(false);
 
   const profileQ = useQuery<Profile | null>(() => getProfile(), []);
@@ -255,7 +256,11 @@ export default function FoodLogScreen() {
           </GlassCard>
         ) : (
           meals.map((meal) => (
-            <Pressable key={meal.id} onLongPress={() => confirmDelete(meal)}>
+            <Pressable
+              key={meal.id}
+              onPress={() => setEditingMeal(meal)}
+              onLongPress={() => confirmDelete(meal)}
+            >
               <GlassCard style={styles.meal}>
                 <View style={styles.mealInner}>
                   <View style={[styles.mealIcon, { backgroundColor: glass.track }]}>
@@ -295,7 +300,7 @@ export default function FoodLogScreen() {
               { color: colors.textFaint, textAlign: "center", marginTop: 14 },
             ]}
           >
-            Long-press a meal to delete it.
+            Tap a meal to edit it, long-press to delete.
           </Text>
         ) : null}
       </GlassScroll>
@@ -304,6 +309,13 @@ export default function FoodLogScreen() {
         visible={sheetOpen}
         onClose={() => setSheetOpen(false)}
         onSaved={refetch}
+      />
+
+      <AddMealSheet
+        visible={editingMeal !== null}
+        onClose={() => setEditingMeal(null)}
+        onSaved={refetch}
+        existing={editingMeal}
       />
 
       <ScanSheet

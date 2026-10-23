@@ -233,6 +233,48 @@ export async function deleteMeal(id: string): Promise<void> {
   if (error) throw error;
 }
 
+/**
+ * Replaces a meal's items with ONE combined item.
+ *
+ * AddMealSheet only ever edits a single name + four numbers, so a meal with
+ * several items (anything parsed from chat) collapses into one when edited
+ * by hand. That's a real loss of detail, but the alternative — a full
+ * multi-item editor — is a much bigger form for a rare path (most edits are
+ * "that was 2 eggs, not 3"), so the UI says so before the user commits to it.
+ */
+export async function updateMeal(id: string, item: NewMealItem, label: string): Promise<Meal> {
+  const totals = sumMacros([
+    {
+      calories: Number(item.calories ?? 0),
+      protein_g: Number(item.protein_g ?? 0),
+      carbs_g: Number(item.carbs_g ?? 0),
+      fat_g: Number(item.fat_g ?? 0),
+    },
+  ]);
+
+  const { data: updated, error } = await supabase
+    .from("meals")
+    .update({ label, ...totals })
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+
+  const { error: delErr } = await supabase.from("meal_items").delete().eq("meal_id", id);
+  if (delErr) throw delErr;
+
+  const { error: insErr } = await supabase.from("meal_items").insert({
+    meal_id: id,
+    name: item.name,
+    qty: item.qty ?? null,
+    unit: item.unit ?? null,
+    ...totals,
+  });
+  if (insErr) throw insErr;
+
+  return updated as Meal;
+}
+
 /* ------------------------------------------------------ AI-parsed meals */
 
 export type Confidence = "high" | "medium" | "low";
@@ -274,6 +316,8 @@ export type ParseResult = {
 /** What the parse-meal function returns for a workout-shaped message. */
 export type ParsedWorkout = {
   name: string;
+  /** Minutes, when the message stated a duration ("ran for 30 min", "5h of running"). */
+  duration_min: number | null;
   exercises: { name: string; sets: { reps: number | null; weight_kg: number | null }[] }[];
 };
 
@@ -524,6 +568,55 @@ export async function addWorkout(w: NewWorkout): Promise<Workout> {
 export async function deleteWorkout(id: string): Promise<void> {
   const { error } = await supabase.from("workouts").delete().eq("id", id);
   if (error) throw error;
+}
+
+/**
+ * Replaces a workout's exercises/sets wholesale.
+ *
+ * Simpler than diffing old sets against new ones — the edit sheet always
+ * hands back the full exercise list anyway, since that's what it's editing.
+ * Sets are deleted then re-inserted; there's a narrow window where a crash
+ * mid-save could lose them, which addWorkout avoids by deleting the PARENT
+ * on failure (nothing to lose), but there's no symmetric safe move for an
+ * edit — the old sets are the thing being replaced.
+ */
+export async function updateWorkout(id: string, w: NewWorkout): Promise<Workout> {
+  const { error } = await supabase
+    .from("workouts")
+    .update({
+      name: w.name,
+      started_at: (w.started_at ?? new Date()).toISOString(),
+      duration_min: w.duration_min ?? null,
+      calories: w.calories ?? null,
+    })
+    .eq("id", id);
+  if (error) throw error;
+
+  const { error: delErr } = await supabase.from("exercise_sets").delete().eq("workout_id", id);
+  if (delErr) throw delErr;
+
+  const rows = w.exercises.flatMap((ex) =>
+    ex.sets.map((s, i) => ({
+      workout_id: id,
+      exercise: ex.name,
+      set_no: i + 1,
+      reps: s.reps,
+      weight_kg: s.weight_kg,
+      done: s.done ?? true,
+    }))
+  );
+  if (rows.length) {
+    const { error: setErr } = await supabase.from("exercise_sets").insert(rows);
+    if (setErr) throw setErr;
+  }
+
+  const { data, error: getErr } = await supabase
+    .from("workouts")
+    .select("*, exercise_sets(*)")
+    .eq("id", id)
+    .single();
+  if (getErr) throw getErr;
+  return data as Workout;
 }
 
 /** Distinct exercise names this user has logged, most recent first. */

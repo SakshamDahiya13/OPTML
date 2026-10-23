@@ -20,6 +20,7 @@ import {
   BodyMetric, SleepLog, Workout, dayRange, daysBack, deleteWorkout, formatMinutes,
   getBody, getSleep, listWorkouts, workoutVolume,
 } from "../lib/db";
+import { workoutIcon, workoutSummary } from "../lib/workoutDisplay";
 
 const RANGES = ["7 days", "14 days", "30 days"] as const;
 const RANGE_DAYS = [7, 14, 30];
@@ -43,13 +44,13 @@ export default function WorkoutsScreen() {
   const [range, setRange] = useState(0);
   const nDays = RANGE_DAYS[range];
 
-  // The day being logged, independent of the chart's range. Samsung keeps
-  // these separate too: you review a trend over weeks but you enter data for
-  // one day at a time.
+  // The day new entries land on — independent of the range the session list
+  // and chart below are showing.
   const [dayIndex, setDayIndex] = useState(new Date().getDay());
   const day = dateForWeekday(dayIndex);
 
   const [workoutOpen, setWorkoutOpen] = useState(false);
+  const [editingWorkout, setEditingWorkout] = useState<Workout | null>(null);
   const [sleepOpen, setSleepOpen] = useState(false);
   const [bodyOpen, setBodyOpen] = useState(false);
 
@@ -60,23 +61,16 @@ export default function WorkoutsScreen() {
     return listWorkouts(start, end);
   }, [nDays]);
 
-  const dayQ = useQuery<Workout[]>(() => {
-    const { start, end } = dayRange(day);
-    return listWorkouts(start, end);
-  }, [dayIndex]);
-
   const sleepQ = useQuery<SleepLog | null>(() => getSleep(day), [dayIndex]);
   const bodyQ = useQuery<BodyMetric | null>(() => getBody(day), [dayIndex]);
 
-  const refetchDay = useCallback(() => {
-    dayQ.refetch();
+  const refetchAll = useCallback(() => {
+    q.refetch();
     sleepQ.refetch();
     bodyQ.refetch();
-    q.refetch();
-  }, [dayQ, sleepQ, bodyQ, q]);
+  }, [q, sleepQ, bodyQ]);
 
   const workouts = q.data ?? [];
-  const dayWorkouts = dayQ.data ?? [];
   const sleep = sleepQ.data ?? null;
   const body = bodyQ.data ?? null;
   const days = daysBack(nDays);
@@ -115,7 +109,7 @@ export default function WorkoutsScreen() {
         onPress: async () => {
           try {
             await deleteWorkout(w.id);
-            refetchDay();
+            refetchAll();
           } catch (e) {
             Alert.alert("Couldn't delete", e instanceof Error ? e.message : String(e));
           }
@@ -156,35 +150,6 @@ export default function WorkoutsScreen() {
             </View>
           </GlassCard>
         </Pressable>
-
-        {dayWorkouts.map((w) => (
-          <Pressable key={w.id} onLongPress={() => confirmDelete(w)}>
-            <GlassCard style={styles.row}>
-              <View style={styles.rowInner}>
-                <View style={[styles.icon, { backgroundColor: glass.track }]}>
-                  <Ionicons name="barbell-outline" size={16} color={colors.text} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[t.cardTitle, { color: colors.text }]}>{w.name}</Text>
-                  <Text style={[t.label, { color: colors.textDim, marginTop: 3 }]} numberOfLines={1}>
-                    {/* Exercise names, deduped — five sets of bench is one
-                        movement to the reader, not five lines. */}
-                    {[...new Set((w.exercise_sets ?? []).map((s) => s.exercise))].join(", ") || "No sets"}
-                  </Text>
-                </View>
-                <View style={{ alignItems: "flex-end" }}>
-                  <Text style={[t.cardTitle, { color: colors.text }]}>
-                    {Math.round(workoutVolume(w))} kg
-                  </Text>
-                  <Text style={[t.tiny, { color: colors.textFaint, marginTop: 3 }]}>
-                    {(w.exercise_sets ?? []).length} sets
-                    {w.duration_min ? ` · ${w.duration_min}m` : ""}
-                  </Text>
-                </View>
-              </View>
-            </GlassCard>
-          </Pressable>
-        ))}
 
         <View style={{ height: space.gap }} />
         <View style={styles.pairRow}>
@@ -227,11 +192,63 @@ export default function WorkoutsScreen() {
           </Pressable>
         </View>
 
+        {/* --------------------------------------------------- the one list */}
+        <View style={{ height: space.section }} />
+        <Text style={[t.cardTitle, { color: colors.text, marginBottom: 12 }]}>Sessions</Text>
+        <Segmented items={RANGES} value={range} onChange={setRange} />
+        <View style={{ height: 12 }} />
+
+        {loading ? (
+          <GlassCard style={styles.empty}>
+            <ActivityIndicator color={colors.textDim} />
+          </GlassCard>
+        ) : empty ? (
+          <GlassCard style={styles.empty}>
+            <Ionicons name="barbell-outline" size={26} color={colors.textFaint} />
+            <Text style={[t.cardTitle, { color: colors.text, marginTop: 12 }]}>
+              No sessions yet
+            </Text>
+            <Text style={[t.label, { color: colors.textDim, marginTop: 6, textAlign: "center" }]}>
+              Tap "Log a workout" above to add your first one.
+            </Text>
+          </GlassCard>
+        ) : (
+          workouts.map((w) => (
+            <Pressable
+              key={w.id}
+              onPress={() => setEditingWorkout(w)}
+              onLongPress={() => confirmDelete(w)}
+            >
+              <GlassCard style={styles.row}>
+                <View style={styles.rowInner}>
+                  <View style={[styles.icon2, { backgroundColor: glass.track }]}>
+                    <Ionicons name={workoutIcon(w) as never} size={16} color={colors.text} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[t.cardTitle, { color: colors.text }]}>{w.name}</Text>
+                    <Text style={[t.label, { color: colors.textDim, marginTop: 3 }]} numberOfLines={1}>
+                      {new Date(w.started_at).toLocaleDateString([], { month: "short", day: "numeric" })}
+                      {" · "}
+                      {[...new Set((w.exercise_sets ?? []).map((s) => s.exercise))].join(", ") || "No sets"}
+                    </Text>
+                  </View>
+                  <Text style={[t.cardTitle, { color: colors.text }]}>
+                    {workoutSummary(w, workoutVolume(w))}
+                  </Text>
+                </View>
+              </GlassCard>
+            </Pressable>
+          ))
+        )}
+
+        {sessions ? (
+          <Text style={[t.label, { color: colors.textFaint, textAlign: "center", marginTop: 14 }]}>
+            Tap a session to edit it, long-press to delete.
+          </Text>
+        ) : null}
+
         {/* ------------------------------------------------------- the trend */}
         <View style={{ height: space.section }} />
-        <Segmented items={RANGES} value={range} onChange={setRange} />
-
-        <View style={{ height: space.gap }} />
         <GlassCard strong style={[styles.hero, cardShadow(theme)]}>
           <CardHead title="Total volume" />
           <View style={styles.metricWrap}>
@@ -259,7 +276,7 @@ export default function WorkoutsScreen() {
           {[
             { k: "Sessions", v: String(sessions) },
             { k: "Minutes", v: String(minutes) },
-            { k: "Avg / day", v: String(Math.round(totalVolume / Math.max(nDays, 1))) },
+            { k: "Avg kg/day", v: String(Math.round(totalVolume / Math.max(nDays, 1))) },
           ].map((s) => (
             <GlassCard key={s.k} style={styles.stat}>
               <View style={styles.statInner}>
@@ -269,74 +286,32 @@ export default function WorkoutsScreen() {
             </GlassCard>
           ))}
         </View>
-
-        <View style={{ height: space.section }} />
-        <Text style={[t.cardTitle, { color: colors.text, marginBottom: 12 }]}>Sessions</Text>
-
-        {loading ? (
-          <GlassCard style={styles.empty}>
-            <ActivityIndicator color={colors.textDim} />
-          </GlassCard>
-        ) : empty ? (
-          <GlassCard style={styles.empty}>
-            <Ionicons name="barbell-outline" size={26} color={colors.textFaint} />
-            <Text style={[t.cardTitle, { color: colors.text, marginTop: 12 }]}>
-              No sessions yet
-            </Text>
-            <Text style={[t.label, { color: colors.textDim, marginTop: 6, textAlign: "center" }]}>
-              Tap "Log a workout" above to add your first one.
-            </Text>
-          </GlassCard>
-        ) : (
-          workouts.map((w) => (
-            <Pressable key={w.id} onLongPress={() => confirmDelete(w)}>
-              <GlassCard style={styles.row}>
-                <View style={styles.rowInner}>
-                  <View style={[styles.icon, { backgroundColor: glass.track }]}>
-                    <Ionicons name="barbell-outline" size={16} color={colors.text} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[t.cardTitle, { color: colors.text }]}>{w.name}</Text>
-                    <Text style={[t.label, { color: colors.textDim, marginTop: 3 }]}>
-                      {new Date(w.started_at).toLocaleDateString([], { month: "short", day: "numeric" })}
-                      {" · "}
-                      {(w.exercise_sets ?? []).length} sets
-                      {w.duration_min ? ` · ${w.duration_min} min` : ""}
-                    </Text>
-                  </View>
-                  <Text style={[t.cardTitle, { color: colors.text }]}>
-                    {Math.round(workoutVolume(w))} kg
-                  </Text>
-                </View>
-              </GlassCard>
-            </Pressable>
-          ))
-        )}
-
-        {sessions ? (
-          <Text style={[t.label, { color: colors.textFaint, textAlign: "center", marginTop: 14 }]}>
-            Long-press a workout to delete it.
-          </Text>
-        ) : null}
       </GlassScroll>
 
       <AddWorkoutSheet
         visible={workoutOpen}
         onClose={() => setWorkoutOpen(false)}
-        onSaved={refetchDay}
+        onSaved={refetchAll}
         day={day}
+      />
+      <AddWorkoutSheet
+        visible={editingWorkout !== null}
+        onClose={() => setEditingWorkout(null)}
+        onSaved={refetchAll}
+        day={day}
+        existing={editingWorkout}
       />
       <AddSleepSheet
         visible={sleepOpen}
         onClose={() => setSleepOpen(false)}
-        onSaved={refetchDay}
+        onSaved={refetchAll}
         day={day}
         existing={sleep}
       />
       <AddBodySheet
         visible={bodyOpen}
         onClose={() => setBodyOpen(false)}
-        onSaved={refetchDay}
+        onSaved={refetchAll}
         day={day}
         existing={body}
       />
@@ -347,7 +322,7 @@ export default function WorkoutsScreen() {
 const styles = StyleSheet.create({
   scroll: { flex: 1, paddingHorizontal: space.gutter },
   hero: { padding: 18 },
-  logCta: { marginBottom: 10 },
+  logCta: { marginBottom: 0 },
   logInner: { flexDirection: "row", alignItems: "center", gap: 13, padding: 15 },
   metricWrap: { marginTop: 16, marginBottom: 20, minHeight: 62, justifyContent: "center" },
   statRow: { flexDirection: "row", gap: 10 },
@@ -356,8 +331,15 @@ const styles = StyleSheet.create({
   pairRow: { flexDirection: "row", gap: 10 },
   pair: { flex: 1 },
   pairInner: { padding: 14 },
+  sectionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
   row: { marginBottom: 10 },
   rowInner: { flexDirection: "row", alignItems: "center", gap: 13, padding: 15 },
   icon: { width: 38, height: 38, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
+  icon2: { width: 38, height: 38, borderRadius: radius.sm, alignItems: "center", justifyContent: "center" },
   empty: { alignItems: "center", justifyContent: "center", paddingVertical: 34, paddingHorizontal: 24 },
 });

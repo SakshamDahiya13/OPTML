@@ -16,7 +16,9 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import GlassCard from "./GlassCard";
 import { useTheme } from "../context/ThemeContext";
 import { radius, type as t } from "../theme";
-import { addWorkout, recentExercises } from "../lib/db";
+import { Workout, addWorkout, recentExercises, updateWorkout } from "../lib/db";
+import { isCardio } from "../lib/workoutDisplay";
+import WorkoutTimer from "./WorkoutTimer";
 
 /** A set the user is still typing. Strings, because "" is not 0. */
 type DraftSet = { reps: string; weight: string };
@@ -34,6 +36,8 @@ type Props = {
   onSaved: () => void;
   /** The day being logged — workouts land on the day you're looking at. */
   day: Date;
+  /** Present when editing a workout that's already saved, rather than logging a new one. */
+  existing?: Workout | null;
 };
 
 /**
@@ -44,7 +48,7 @@ type Props = {
  * charted, can't show a personal best, and can't tell you that last week you
  * benched 60kg for 8. The whole point of logging is the comparison.
  */
-export default function AddWorkoutSheet({ visible, onClose, onSaved, day }: Props) {
+export default function AddWorkoutSheet({ visible, onClose, onSaved, day, existing }: Props) {
   const insets = useSafeAreaInsets();
   const { colors, glass } = useTheme();
 
@@ -56,6 +60,7 @@ export default function AddWorkoutSheet({ visible, onClose, onSaved, day }: Prop
   const [recent, setRecent] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [timerFor, setTimerFor] = useState<number | null>(null);
 
   // Loaded once per open. Your own history is a far better exercise list than
   // any fixed catalogue — most people rotate through the same dozen lifts.
@@ -63,6 +68,36 @@ export default function AddWorkoutSheet({ visible, onClose, onSaved, day }: Prop
     if (!visible) return;
     recentExercises().then(setRecent).catch(() => setRecent([]));
   }, [visible]);
+
+  // Editing an existing workout prefills everything from it; opening fresh
+  // clears whatever the last session left behind.
+  useEffect(() => {
+    if (!visible) return;
+    if (existing) {
+      setName(existing.name);
+      setDuration(existing.duration_min != null ? String(existing.duration_min) : "");
+      const grouped: DraftExercise[] = [];
+      for (const s of existing.exercise_sets ?? []) {
+        let ex = grouped.find((g) => g.name === s.exercise);
+        if (!ex) {
+          ex = { name: s.exercise, sets: [] };
+          grouped.push(ex);
+        }
+        ex.sets.push({
+          reps: s.reps != null ? String(s.reps) : "",
+          weight: s.weight_kg != null ? String(s.weight_kg) : "",
+        });
+      }
+      setExercises(grouped);
+    } else {
+      setName("");
+      setDuration("");
+      setExercises([]);
+    }
+    setPicking(false);
+    setSearch("");
+    setError(null);
+  }, [visible, existing]);
 
   function reset() {
     setName("");
@@ -137,15 +172,20 @@ export default function AddWorkoutSheet({ visible, onClose, onSaved, day }: Prop
       const started = new Date(day);
       started.setHours(now.getHours(), now.getMinutes(), 0, 0);
 
-      await addWorkout({
+      const payload = {
         name: name.trim() || "Workout",
-        started_at: started,
+        started_at: existing ? new Date(existing.started_at) : started,
         duration_min: num(duration),
         exercises: exercises.map((ex) => ({
           name: ex.name,
           sets: ex.sets.map((s) => ({ reps: num(s.reps), weight_kg: num(s.weight) })),
         })),
-      });
+      };
+      if (existing) {
+        await updateWorkout(existing.id, payload);
+      } else {
+        await addWorkout(payload);
+      }
       reset();
       onSaved();
       onClose();
@@ -179,7 +219,7 @@ export default function AddWorkoutSheet({ visible, onClose, onSaved, day }: Prop
             <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
               <View style={styles.head}>
                 <Text style={[t.screenTitle, { color: colors.text, fontSize: 24 }]}>
-                  Log workout
+                  {existing ? "Edit workout" : "Log workout"}
                 </Text>
                 <Pressable onPress={onClose} hitSlop={10}>
                   <Ionicons name="close" size={22} color={colors.textDim} />
@@ -212,9 +252,19 @@ export default function AddWorkoutSheet({ visible, onClose, onSaved, day }: Prop
                 <View key={`${ex.name}-${ei}`} style={styles.exBlock}>
                   <View style={styles.exHead}>
                     <Text style={[t.cardTitle, { color: colors.text }]}>{ex.name}</Text>
-                    <Pressable onPress={() => removeExercise(ei)} hitSlop={8}>
-                      <Ionicons name="trash-outline" size={17} color={colors.textFaint} />
-                    </Pressable>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 14 }}>
+                      {isCardio(ex.name) ? (
+                        <Pressable onPress={() => setTimerFor(ei)} hitSlop={8}>
+                          <View style={[styles.timerPill, { backgroundColor: glass.track }]}>
+                            <Ionicons name="timer-outline" size={14} color={colors.text} />
+                            <Text style={[t.tiny, { color: colors.text, fontWeight: "600" }]}>Timer</Text>
+                          </View>
+                        </Pressable>
+                      ) : null}
+                      <Pressable onPress={() => removeExercise(ei)} hitSlop={8}>
+                        <Ionicons name="trash-outline" size={17} color={colors.textFaint} />
+                      </Pressable>
+                    </View>
                   </View>
 
                   <View style={styles.setHead}>
@@ -310,7 +360,7 @@ export default function AddWorkoutSheet({ visible, onClose, onSaved, day }: Prop
                     <ActivityIndicator color={colors.onAccent} />
                   ) : (
                     <Text style={[t.cardTitle, { color: colors.onAccent }]}>
-                      {totalSets ? `Save ${totalSets} ${totalSets === 1 ? "set" : "sets"}` : "Save workout"}
+                      {existing ? "Save changes" : totalSets ? `Save ${totalSets} ${totalSets === 1 ? "set" : "sets"}` : "Save workout"}
                     </Text>
                   )}
                 </View>
@@ -319,6 +369,17 @@ export default function AddWorkoutSheet({ visible, onClose, onSaved, day }: Prop
           </GlassCard>
         </KeyboardAvoidingView>
       </View>
+
+      <WorkoutTimer
+        visible={timerFor !== null}
+        onClose={() => setTimerFor(null)}
+        exerciseName={timerFor !== null ? exercises[timerFor]?.name ?? "" : ""}
+        onFinish={(mins) => {
+          // Adds to whatever's already in the session duration field, so
+          // timing two separate cardio blocks in one session sums correctly.
+          setDuration((d) => String((num(d) ?? 0) + mins));
+        }}
+      />
     </Modal>
   );
 }
@@ -343,5 +404,6 @@ const styles = StyleSheet.create({
   picker: { marginTop: 20 },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 },
   chip: { paddingHorizontal: 14, paddingVertical: 9, borderRadius: radius.pill },
+  timerPill: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: radius.pill },
   cta: { borderRadius: radius.md, paddingVertical: 16, alignItems: "center" },
 });

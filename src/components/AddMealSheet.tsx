@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -16,7 +16,7 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import GlassCard from "./GlassCard";
 import { useTheme } from "../context/ThemeContext";
 import { radius, space, type as t } from "../theme";
-import { addMeal } from "../lib/db";
+import { Meal, addMeal, updateMeal } from "../lib/db";
 
 const LABELS = ["Breakfast", "Lunch", "Dinner", "Snack"] as const;
 
@@ -24,6 +24,8 @@ type Props = {
   visible: boolean;
   onClose: () => void;
   onSaved: () => void;
+  /** Present when editing a meal that's already saved. */
+  existing?: Meal | null;
 };
 
 /**
@@ -33,7 +35,7 @@ type Props = {
  * GlassCard composites against that, so panes in here read as the same glass
  * as everywhere else rather than floating on a grey slab.
  */
-export default function AddMealSheet({ visible, onClose, onSaved }: Props) {
+export default function AddMealSheet({ visible, onClose, onSaved, existing }: Props) {
   const insets = useSafeAreaInsets();
   const { colors, glass } = useTheme();
 
@@ -56,6 +58,27 @@ export default function AddMealSheet({ visible, onClose, onSaved }: Props) {
     setError(null);
   }
 
+  // Editing prefills from the meal's current totals. A meal with several
+  // items (anything parsed from chat) only has ONE name/macro set to show,
+  // so its items are joined into a readable label — saving replaces them
+  // all with the single edited item, which the "combines into one" note
+  // below warns about before the user commits to it.
+  useEffect(() => {
+    if (!visible) return;
+    if (existing) {
+      setLabel(existing.label);
+      const items = existing.meal_items ?? [];
+      setName(items.length > 1 ? items.map((i) => i.name).join(", ") : items[0]?.name ?? existing.label);
+      setCal(String(Math.round(existing.calories)));
+      setP(String(Math.round(existing.protein_g)));
+      setC(String(Math.round(existing.carbs_g)));
+      setF(String(Math.round(existing.fat_g)));
+    } else {
+      reset();
+    }
+    setError(null);
+  }, [visible, existing]);
+
   function num(v: string): number {
     const n = parseFloat(v.replace(",", "."));
     return Number.isFinite(n) && n >= 0 ? n : 0;
@@ -69,18 +92,18 @@ export default function AddMealSheet({ visible, onClose, onSaved }: Props) {
     setError(null);
     setSaving(true);
     try {
-      await addMeal({
-        label,
-        items: [
-          {
-            name: name.trim(),
-            calories: num(cal),
-            protein_g: num(p),
-            carbs_g: num(c),
-            fat_g: num(f),
-          },
-        ],
-      });
+      const item = {
+        name: name.trim(),
+        calories: num(cal),
+        protein_g: num(p),
+        carbs_g: num(c),
+        fat_g: num(f),
+      };
+      if (existing) {
+        await updateMeal(existing.id, item, label);
+      } else {
+        await addMeal({ label, items: [item] });
+      }
       reset();
       onSaved();
       onClose();
@@ -122,7 +145,7 @@ export default function AddMealSheet({ visible, onClose, onSaved }: Props) {
             >
               <View style={styles.head}>
                 <Text style={[t.screenTitle, { color: colors.text, fontSize: 24 }]}>
-                  Add meal
+                  {existing ? "Edit meal" : "Add meal"}
                 </Text>
                 <Pressable onPress={onClose} hitSlop={10}>
                   <Ionicons name="close" size={22} color={colors.textDim} />
@@ -214,7 +237,7 @@ export default function AddMealSheet({ visible, onClose, onSaved }: Props) {
                     <ActivityIndicator color={colors.onAccent} />
                   ) : (
                     <Text style={[t.cardTitle, { color: colors.onAccent }]}>
-                      Save meal
+                      {existing ? "Save changes" : "Save meal"}
                     </Text>
                   )}
                 </View>
@@ -226,7 +249,9 @@ export default function AddMealSheet({ visible, onClose, onSaved }: Props) {
                   { color: colors.textFaint, textAlign: "center", marginTop: 14 },
                 ]}
               >
-                Soon you'll just type this in chat and it'll fill itself in.
+                {existing && (existing.meal_items?.length ?? 0) > 1
+                  ? "Saving combines this meal's items into one."
+                  : "You can also log meals by describing them in chat."}
               </Text>
             </ScrollView>
           </GlassCard>

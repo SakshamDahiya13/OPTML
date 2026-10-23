@@ -4,7 +4,8 @@ import Ionicons from "@expo/vector-icons/Ionicons";
 import GlassCard from "./GlassCard";
 import { useTheme } from "../context/ThemeContext";
 import { radius, type as t } from "../theme";
-import { ParsedWorkout, addWorkout } from "../lib/db";
+import { ParsedWorkout, addWorkout, formatMinutes } from "../lib/db";
+import { exerciseIcon } from "../lib/workoutDisplay";
 
 type Props = {
   workout: ParsedWorkout;
@@ -35,6 +36,7 @@ export default function ConfirmWorkoutCard({ workout, onSaved, onDiscard }: Prop
     try {
       await addWorkout({
         name: workout.name,
+        duration_min: workout.duration_min,
         exercises: workout.exercises.map((e) => ({
           name: e.name,
           sets: e.sets.map((s) => ({ reps: s.reps, weight_kg: s.weight_kg })),
@@ -54,7 +56,8 @@ export default function ConfirmWorkoutCard({ workout, onSaved, onDiscard }: Prop
       <GlassCard style={styles.saved}>
         <Ionicons name="checkmark-circle" size={17} color={colors.text} />
         <Text style={[t.label, { color: colors.text }]}>
-          Logged {workout.name.toLowerCase()} — {totalSets} {totalSets === 1 ? "set" : "sets"}
+          Logged {workout.name.toLowerCase()}
+          {workout.duration_min ? ` — ${formatMinutes(workout.duration_min)}` : ` — ${totalSets} ${totalSets === 1 ? "set" : "sets"}`}
         </Text>
       </GlassCard>
     );
@@ -64,12 +67,12 @@ export default function ConfirmWorkoutCard({ workout, onSaved, onDiscard }: Prop
     <GlassCard strong radius={radius.lg} style={styles.card}>
       <View style={styles.head}>
         <View style={[styles.icon, { backgroundColor: glass.track }]}>
-          <Ionicons name="barbell-outline" size={16} color={colors.text} />
+          <Ionicons name={exerciseIcon(workout.exercises[0]?.name ?? "") as never} size={16} color={colors.text} />
         </View>
         <View style={{ flex: 1 }}>
           <Text style={[t.cardTitle, { color: colors.text }]}>{workout.name}</Text>
           <Text style={[t.label, { color: colors.textDim, marginTop: 2 }]}>
-            {totalSets} {totalSets === 1 ? "set" : "sets"}
+            {workout.duration_min ? formatMinutes(workout.duration_min) : `${totalSets} ${totalSets === 1 ? "set" : "sets"}`}
           </Text>
         </View>
       </View>

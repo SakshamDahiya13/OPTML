@@ -61,7 +61,7 @@ Return ONLY a JSON object, no prose, no markdown fence, in exactly this shape:
   "kind": "food" | "workout" | "sleep" | "none",
   "label": "Breakfast" | "Lunch" | "Dinner" | "Snack",
   "items": [ ...food items, see below... ],
-  "workout": { "name": string, "exercises": [ { "name": string, "sets": [ { "reps": number|null, "weight_kg": number|null } ] } ] } | null,
+  "workout": { "name": string, "duration_min": number|null, "exercises": [ { "name": string, "sets": [ { "reps": number|null, "weight_kg": number|null } ] } ] } | null,
   "sleep": { "hours": number|null, "quality": 1|2|3|4|5|null, "bed_time": "HH:MM"|null, "wake_time": "HH:MM"|null } | null
 }
 
@@ -122,8 +122,11 @@ one entry per set mentioned. If only a rep count is given with no set count
 ("40 pushups"), that is one set of that many reps, weight_kg null. If reps
 AND weight are both absent for a cardio-style activity ("ran for 30 minutes"),
 still create one exercise named for the activity with one set, reps null,
-weight_kg null — "workout.name" or the surrounding context can carry the
-duration in words; there is no duration field on a set.
+weight_kg null.
+"workout.duration_min" is the session's total length IN MINUTES, whenever a
+duration is stated anywhere in the message — "ran for 30 minutes" -> 30,
+"5h of running" -> 300, "cycled for an hour" -> 60. Convert hours to minutes
+yourself. null if no duration was mentioned at all.
 "workout.name" is a short label for the session, e.g. "Push day", "Run",
 "Pushups" — invent one if the user didn't name it.
 
@@ -209,7 +212,11 @@ function sanitiseWorkout(raw: unknown): ParsedWorkout | null {
     .filter((e) => e.name);
 
   if (!exercises.length) return null;
-  return { name: String(r.name ?? "Workout").slice(0, 80), exercises };
+
+  const dur = r.duration_min == null ? null : clampNumber(r.duration_min);
+  const duration_min = dur !== null && dur > 0 && dur < 24 * 60 ? Math.round(dur) : null;
+
+  return { name: String(r.name ?? "Workout").slice(0, 80), duration_min, exercises };
 }
 
 type ParsedSleep = {
