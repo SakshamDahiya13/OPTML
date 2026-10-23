@@ -11,13 +11,13 @@
 //
 // Deploy:
 //   Dashboard -> Edge Functions -> Deploy a new function -> paste this file
-//   Secrets needed: XAI_API_KEY   (required)
-//                   XAI_MODEL     (optional, defaults below)
-//                   XAI_BASE_URL  (optional, for switching provider)
+//   Secrets needed: GEMINI_API_KEY  (required)
+//                   GEMINI_MODEL    (optional, defaults below)
+//                   AI_BASE_URL     (optional, for switching provider)
 //
-// The provider is reached over the OpenAI-compatible chat-completions API, so
-// swapping xAI for OpenAI or another compatible host is a secrets change, not
-// a code change.
+// Google serves Gemini over an OpenAI-compatible chat-completions API, which
+// is what this calls. Moving to OpenAI, xAI or another compatible host is a
+// secrets change (AI_BASE_URL + GEMINI_MODEL), not a code change.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -27,10 +27,10 @@ const CORS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// Model names change often. Override with the XAI_MODEL secret rather than
+// Model names change often. Override with the GEMINI_MODEL secret rather than
 // editing this file; if the provider rejects it, the error below says so.
-const DEFAULT_MODEL = "grok-4-fast";
-const DEFAULT_BASE_URL = "https://api.x.ai/v1";
+const DEFAULT_MODEL = "gemini-3.5-flash-lite";
+const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai";
 
 // A meal description is a sentence, not an essay. Capping input keeps a
 // pasted wall of text from turning into a surprise token bill.
@@ -145,9 +145,9 @@ Deno.serve(async (req: Request) => {
     });
 
   try {
-    const apiKey = Deno.env.get("XAI_API_KEY");
+    const apiKey = Deno.env.get("GEMINI_API_KEY");
     if (!apiKey) {
-      return json({ error: "XAI_API_KEY is not set on this function." }, 500);
+      return json({ error: "GEMINI_API_KEY is not set on this function." }, 500);
     }
 
     // Authenticate as the caller. Without this the function is an open proxy
@@ -188,8 +188,8 @@ Deno.serve(async (req: Request) => {
       }`
       : "";
 
-    const model = Deno.env.get("XAI_MODEL") ?? DEFAULT_MODEL;
-    const baseUrl = Deno.env.get("XAI_BASE_URL") ?? DEFAULT_BASE_URL;
+    const model = Deno.env.get("GEMINI_MODEL") ?? DEFAULT_MODEL;
+    const baseUrl = Deno.env.get("AI_BASE_URL") ?? DEFAULT_BASE_URL;
 
     const upstream = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
@@ -216,7 +216,7 @@ Deno.serve(async (req: Request) => {
       return json(
         {
           error: looksLikeModel
-            ? `The provider rejected model "${model}". Set the XAI_MODEL secret to a model your account can use.`
+            ? `The provider rejected model "${model}". Set the GEMINI_MODEL secret to a model your account can use.`
             : "The parsing service is unavailable right now.",
           status: upstream.status,
           detail: detail.slice(0, 400),

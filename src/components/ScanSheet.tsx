@@ -28,6 +28,7 @@ import {
   saveProduct,
   scaleToPortion,
 } from "../lib/barcode";
+import { readLabel, toPer100 } from "../lib/label";
 
 /** Plain-English reason a scan produced nothing, so the user isn't guessing. */
 function failureCopy(f: LookupFailure): { title: string; body: string } {
@@ -66,7 +67,16 @@ const FOOD_BARCODES = ["ean13", "ean8", "upc_a", "upc_e"] as const;
 
 const LABELS = ["Breakfast", "Lunch", "Dinner", "Snack"] as const;
 
-type Stage = "scanning" | "looking" | "found" | "missing" | "adding";
+type Stage =
+  | "scanning"
+  | "looking"
+  | "found"
+  | "missing"
+  | "adding"
+  /** Camera pointed at the nutrition panel rather than the barcode. */
+  | "shooting"
+  /** Gemini is reading the photo. */
+  | "reading";
 
 /** The four macros every label is legally required to print. */
 const LABEL_FIELDS = [
@@ -108,6 +118,12 @@ export default function ScanSheet({
   // The contribute-a-product form, used when a barcode isn't known anywhere.
   const [form, setForm] = useState<Record<string, string>>({});
 
+  // Set when the form was filled from a photo rather than typed, so the UI
+  // can tell the user to check the numbers instead of trusting them.
+  const [labelNote, setLabelNote] = useState<string | null>(null);
+
+  const camera = useRef<CameraView | null>(null);
+
   // onBarcodeScanned fires every frame the code is visible. Without this the
   // same barcode triggers dozens of lookups in a second.
   const locked = useRef(false);
@@ -123,6 +139,7 @@ export default function ScanSheet({
     setWeighed(true);
     setError(null);
     setForm({});
+    setLabelNote(null);
   }, []);
 
   useEffect(() => {
@@ -190,6 +207,59 @@ export default function ScanSheet({
     const n = parseFloat((form[k] ?? "").replace(",", "."));
     return Number.isFinite(n) && n >= 0 ? n : 0;
   };
+
+  /**
+   * Photograph the nutrition panel and let the model fill the form in.
+   *
+   * The result always lands in the SAME editable form the user would have
+   * typed by hand — never saved straight to the shared product table. A
+   * misread "7" for a "1" has to be catchable, and the only reliable checker
+   * is the person holding the packet.
+   */
+  async function shootLabel() {
+    if (!camera.current) return;
+    setError(null);
+    try {
+      const shot = await camera.current.takePictureAsync({
+        base64: true,
+        // The panel is small print, so resolution matters: a heavily
+        // compressed photo loses the decimal points. 0.6 keeps them legible
+        // while holding the base64 upload to roughly a megabyte.
+        quality: 0.6,
+        skipProcessing: true,
+      });
+      if (!shot?.base64) throw new Error("The camera returned no image.");
+
+      setStage("reading");
+      const reading = await readLabel(shot.base64);
+
+      if (!reading.found) {
+        setStage("adding");
+        setLabelNote(
+          "Couldn't read the panel clearly — type the numbers in and they'll be saved for everyone."
+        );
+        return;
+      }
+
+      const { values, warning } = toPer100(reading);
+      setForm((f) => ({
+        // Anything the user already typed wins: they looked at the packet.
+        name: f.name || reading.name || "",
+        brand: f.brand || reading.brand || "",
+        calories: f.calories || values.calories,
+        protein: f.protein || values.protein,
+        carbs: f.carbs || values.carbs,
+        fat: f.fat || values.fat,
+        serving:
+          f.serving || (reading.serving_grams ? String(reading.serving_grams) : ""),
+      }));
+      setLabelNote(warning ?? "Read from the photo — check it against the pack.");
+      setStage("adding");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setStage("adding");
+    }
+  }
 
   async function contribute() {
     if (!(form.name ?? "").trim()) {
@@ -409,6 +479,38 @@ export default function ScanSheet({
                 </View>
               ) : null}
 
+              {/* -------------------------------------------- shooting */}
+              {stage === "shooting" ? (
+                <View style={styles.cameraWrap}>
+                  <CameraView ref={camera} style={StyleSheet.absoluteFill} facing="back" />
+                  <View style={styles.reticle} pointerEvents="none">
+                    <View style={[styles.reticleBox, { borderColor: "#fff" }]} />
+                  </View>
+                  <Text style={styles.cameraHint}>
+                    Fill the frame with the nutrition table
+                  </Text>
+                  <View style={styles.shutterRow}>
+                    <Pressable onPress={() => setStage("adding")} hitSlop={10}>
+                      <Text style={[t.label, { color: "#fff" }]}>Cancel</Text>
+                    </Pressable>
+                    <Pressable onPress={shootLabel} hitSlop={10}>
+                      <View style={styles.shutter} />
+                    </Pressable>
+                    <View style={{ width: 52 }} />
+                  </View>
+                </View>
+              ) : null}
+
+              {/* --------------------------------------------- reading */}
+              {stage === "reading" ? (
+                <View style={styles.center}>
+                  <ActivityIndicator color={colors.text} />
+                  <Text style={[t.label, { color: colors.textDim, marginTop: 12 }]}>
+                    Reading the label…
+                  </Text>
+                </View>
+              ) : null}
+
               {/* ---------------------------------------------- adding */}
               {stage === "adding" ? (
                 <ScrollView
@@ -419,6 +521,21 @@ export default function ScanSheet({
                     Copy the numbers from the nutrition panel. Everyone who
                     scans {code} after you gets them instantly.
                   </Text>
+
+                  <Pressable onPress={() => setStage("shooting")} style={{ marginTop: 14 }}>
+                    <View style={[styles.photoCta, { backgroundColor: glass.track }]}>
+                      <Ionicons name="camera-outline" size={18} color={colors.text} />
+                      <Text style={[t.label, { color: colors.text, fontWeight: "600" }]}>
+                        Photograph the label instead
+                      </Text>
+                    </View>
+                  </Pressable>
+
+                  {labelNote ? (
+                    <Text style={[t.label, { color: colors.textDim, marginTop: 12 }]}>
+                      {labelNote}
+                    </Text>
+                  ) : null}
 
                   <Text style={[t.tiny, { color: colors.textDim, marginTop: 18 }]}>
                     PRODUCT
@@ -722,6 +839,32 @@ export default function ScanSheet({
 }
 
 const styles = StyleSheet.create({
+  photoCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: radius.md,
+  },
+  shutterRow: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 18,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 22,
+  },
+  shutter: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    backgroundColor: "#fff",
+    borderWidth: 4,
+    borderColor: "rgba(255,255,255,0.45)",
+  },
   root: { flex: 1, justifyContent: "flex-end" },
   scrim: {
     position: "absolute",
