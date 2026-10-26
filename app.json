@@ -27,7 +27,8 @@
         {
           "cameraPermission": "OPTML uses the camera to scan barcodes on food packaging."
         }
-      ]
+      ],
+      "expo-status-bar"
     ]
   }
 }
